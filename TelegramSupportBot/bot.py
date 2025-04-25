@@ -12,45 +12,37 @@ user_req_timers   = {}
 
 
 class ButtonManager:
-    def __init__(self, bot, timeout=1800):
+    def __init__(self, bot, timeout=86400):
         self.bot = bot
         self.timeout = timeout
-        # для каждого chat_id храним (message_id, timer)
-        self._data = {}  # { chat_id: (msg_id, Timer) }
+        # Для каждого chat_id храним кортеж (message_id, Timer)
+        self._data = {}
 
-    def send(self, chat_id, text, reply_markup, parse_mode=None):
-        # 1. Отменяем старый таймер и удаляем предыдущее сообщение
-        if chat_id in self._data:
-            old_msg_id, old_timer = self._data[chat_id]
-            old_timer.cancel()
-            try:
-                self.bot.delete_message(chat_id, old_msg_id)
-            except:
-                pass
-
+    def send(self, chat_id, text, reply_markup=None, parse_mode=None):
         # 2. Отправляем новое сообщение
         sent = self.bot.send_message(chat_id, text,
                                      reply_markup=reply_markup,
                                      parse_mode=parse_mode)
         msg_id = sent.message_id
 
-        # 3. Запускаем таймер на удаление
+        # 3. Запускаем таймер на удаление через timeout секунд
         def _delete():
             try:
                 self.bot.delete_message(chat_id, msg_id)
             except:
                 pass
+            # чистим запись
             self._data.pop(chat_id, None)
 
         t = Timer(self.timeout, _delete)
         t.start()
 
-        # 4. Сохраняем ссылку на это сообщение
+        # 4. Сохраняем таймер и message_id
         self._data[chat_id] = (msg_id, t)
         return sent
     
 bot = telebot.TeleBot(config.TOKEN, skip_pending=True)
-button_mgr = ButtonManager(bot, timeout=1800)
+button_mgr = ButtonManager(bot, timeout=86400)
 
 def remove_buttons(chat_id, message_id):
     try:
@@ -67,7 +59,7 @@ def manage_agent_buttons(chat_id, markup):
         except Exception as e:
             print(f"Ошибка при удалении предыдущих кнопок: {e}")
 
-    msg = bot.send_message(chat_id, "📋 Меню агента поддержки", reply_markup=markup)
+    msg = button_mgr.send(chat_id, "📋 Меню агента поддержки", reply_markup=markup)
 
     timer = Timer(1800, remove_buttons, args=[chat_id, msg.message_id])
     timer.start()
@@ -87,7 +79,7 @@ def agent(message):
     user_id = message.from_user.id
 
     if core.check_agent_status(user_id) == True: 
-        bot.send_message(message.chat.id, '🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_agent())
+        button_mgr.send(message.chat.id, '🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_agent())
 
     else:
         take_password_message = bot.send_message(message.chat.id, '⚠️ Тебя нет в базе. Отправь одноразовый пароль доступа.', reply_markup=markup.markup_cancel())
@@ -101,7 +93,7 @@ def admin(message):
     user_id = message.from_user.id
 
     if str(user_id) == config.ADMIN_ID:
-        bot.send_message(message.chat.id, '🔑 Вы авторизованы как Админ', reply_markup=markup.markup_admin())
+        button_mgr.send(message.chat.id, '🔑 Вы авторизованы как Админ', reply_markup=markup.markup_admin())
     else:
         bot.send_message(message.chat.id, '🚫 Эта команда доступна только администратору.')
 
@@ -130,7 +122,7 @@ def send_text(message):
         if value == 0:
             sent = bot.send_message(user_id, 'У вас пока ещё нет вопросов.', reply_markup=markup.markup_main())
         else:
-            sent = bot.send_message(user_id,
+            sent = button_mgr.send(user_id,
                                     'Ваши вопросы:',
                                     reply_markup=markup_req)
 
@@ -172,7 +164,7 @@ def get_password_message(message):
         core.add_agent(user_id)
 
         bot.send_message(message.chat.id, '🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_main())
-        bot.send_message(message.chat.id, 'Выберите раздел технической панели:', parse_mode='html', reply_markup=markup.markup_agent())
+        button_mgr.send(message.chat.id, 'Выберите раздел технической панели:', parse_mode='html', reply_markup=markup.markup_agent())
 
     else:
         send_message = bot.send_message(message.chat.id, '⚠️ Неверный пароль. Попробуй ещё раз.', reply_markup=markup.markup_cancel())
@@ -197,7 +189,7 @@ def get_agent_id_message(message):
     else:
         core.add_agent(agent_id)
         bot.send_message(message.chat.id, '✅ Агент успешно добавлен.', reply_markup=markup.markup_main())
-        bot.send_message(message.chat.id, 'Выберите раздел админ панели:', reply_markup=markup.markup_admin())
+        button_mgr.send(message.chat.id, 'Выберите раздел админ панели:', reply_markup=markup.markup_admin())
 
 
 def get_new_request(message):
@@ -293,7 +285,7 @@ def get_additional_message(message, req_id, status):
                 if type == 'photo':
                     bot.send_photo(user_id, photo=file_id, reply_markup=markup.markup_main())
                 elif type == 'document':
-                    bot.send_document(user_id, data=file_id, reply_markup=markup.markup_main())
+                    bot.send_document(user_id, document=file_id, reply_markup=markup.markup_main())
                 elif type == 'video':
                     bot.send_video(user_id, data=file_id, reply_markup=markup.markup_main())
                 elif type == 'audio':
@@ -345,17 +337,16 @@ def callback_inline(call):
                         bot.delete_message(user_id, user_req_messages[user_id])
                     except Exception as e:
                         print(f"Error deleting old message: {e}")
-                    sent = bot.send_message(user_id, text, reply_markup=markup_req)
+                    sent = button_mgr.send(user_id, text, reply_markup=markup_req)
                     msg_id = sent.message_id
             else:
                 # первого раза нет старого — просто отправляем новое
-                sent = bot.send_message(user_id, text, reply_markup=markup_req)
+                sent = button_mgr.send(user_id, text, reply_markup=markup_req)
                 msg_id = sent.message_id
 
             # сохраняем ID сообщения
             user_req_messages[user_id] = msg_id
 
-            # запускаем таймер на удаление через 30 минут (1800 с)
             def _del():
                 try:
                     bot.delete_message(user_id, msg_id)
@@ -404,7 +395,7 @@ def callback_inline(call):
                 bot.send_message(user_id, "⚠️ Этот запрос уже завершен.", reply_markup=markup.markup_main())
                 return bot.answer_callback_query(call.id)
             if confirm_status == 'wait':
-                bot.send_message(user_id, "Для завершения запроса - нажмите кнопку <b>Подтвердить</b>",
+                button_mgr.send(user_id, "Для завершения запроса - нажмите кнопку <b>Подтвердить</b>",
                                  parse_mode='html', reply_markup=markup.markup_confirm_req(req_id))
             else:  # 'true'
                 core.confirm_req(req_id)
@@ -435,7 +426,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на файл, чтобы получить его.', reply_markup=markup_files)
             except:
-                bot.send_message(chat_id=call.message.chat.id, text='Нажмите на файл, чтобы получить его.', reply_markup=markup_files)
+                button_mgr.send(chat_id=call.message.chat.id, text='Нажмите на файл, чтобы получить его.', reply_markup=markup_files)
 
             bot.answer_callback_query(call.id)
 
@@ -450,7 +441,7 @@ def callback_inline(call):
             if type == 'photo':
                 bot.send_photo(call.message.chat.id, photo=file_id, reply_markup=markup.markup_main())
             elif type == 'document':
-                bot.send_document(call.message.chat.id, data=file_id, reply_markup=markup.markup_main())
+                bot.send_document(call.message.chat.id, document=file_id, reply_markup=markup.markup_main())
             elif type == 'video':
                 bot.send_video(call.message.chat.id, data=file_id, reply_markup=markup.markup_main())
             elif type == 'audio':
@@ -465,7 +456,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_agent())
             except:
-                bot.send_message(call.message.chat.id, '🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_agent())
+                button_mgr.send(call.message.chat.id, '🔑 Вы авторизованы как Агент поддержки', parse_mode='html', reply_markup=markup.markup_agent())
 
             bot.answer_callback_query(call.id)
 
@@ -474,7 +465,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='🔑 Вы авторизованы как Админ', parse_mode='html', reply_markup=markup.markup_admin())
             except:
-                bot.send_message(call.message.chat.id, '🔑 Вы авторизованы как Админ', parse_mode='html', reply_markup=markup.markup_admin())
+                button_mgr.send(call.message.chat.id, '🔑 Вы авторизованы как Админ', parse_mode='html', reply_markup=markup.markup_admin())
 
             bot.answer_callback_query(call.id)
 
@@ -498,7 +489,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup_agents)
             except:
-                bot.send_message(call.message.chat.id, 'Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup_agents)
+                button_mgr.send(call.message.chat.id, 'Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup_agents)
 
             bot.answer_callback_query(call.id)
 
@@ -510,7 +501,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_agents('1')[0])
             except:
-                bot.send_message(call.message.chat.id, 'Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_agents('1')[0])
+                button_mgr.send(call.message.chat.id, 'Нажмите на агента поддержки, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_agents('1')[0])
 
             bot.answer_callback_query(call.id)
 
@@ -529,7 +520,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup_passwords)
             except:
-                bot.send_message(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup_passwords)
+                button_mgr.send(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup_passwords)
 
             bot.answer_callback_query(call.id)
 
@@ -541,7 +532,7 @@ def callback_inline(call):
             try:
                 bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
             except:
-                bot.send_message(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
+                button_mgr.send(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
 
             bot.answer_callback_query(call.id)
 
@@ -558,7 +549,7 @@ def callback_inline(call):
                 i += 1
             
             bot.send_message(call.message.chat.id, f"✅ Сгенерировано {i-1} паролей:\n\n{text_passwords}", parse_mode='html', reply_markup=markup.markup_main())
-            bot.send_message(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
+            button_mgr.send(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
 
             bot.answer_callback_query(call.id)
 
@@ -571,7 +562,7 @@ def callback_inline(call):
                 try:
                     bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"Вы точно хотите отключить бота?", parse_mode='html', reply_markup=markup.markup_confirm_stop())
                 except:
-                    bot.send_message(call.message.chat.id, f"Вы точно хотите отключить бота?", parse_mode='html', reply_markup=markup.markup_confirm_stop())
+                    button_mgr.send(call.message.chat.id, f"Вы точно хотите отключить бота?", parse_mode='html', reply_markup=markup.markup_confirm_stop())
 
             #Подтверждение получено
             elif status == 'confirm':
