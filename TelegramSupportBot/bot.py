@@ -7,6 +7,50 @@ from telebot import apihelper
 from threading import Timer
 
 active_buttons = {}
+user_req_messages = {}
+user_req_timers   = {}
+
+
+class ButtonManager:
+    def __init__(self, bot, timeout=1800):
+        self.bot = bot
+        self.timeout = timeout
+        # для каждого chat_id храним (message_id, timer)
+        self._data = {}  # { chat_id: (msg_id, Timer) }
+
+    def send(self, chat_id, text, reply_markup, parse_mode=None):
+        # 1. Отменяем старый таймер и удаляем предыдущее сообщение
+        if chat_id in self._data:
+            old_msg_id, old_timer = self._data[chat_id]
+            old_timer.cancel()
+            try:
+                self.bot.delete_message(chat_id, old_msg_id)
+            except:
+                pass
+
+        # 2. Отправляем новое сообщение
+        sent = self.bot.send_message(chat_id, text,
+                                     reply_markup=reply_markup,
+                                     parse_mode=parse_mode)
+        msg_id = sent.message_id
+
+        # 3. Запускаем таймер на удаление
+        def _delete():
+            try:
+                self.bot.delete_message(chat_id, msg_id)
+            except:
+                pass
+            self._data.pop(chat_id, None)
+
+        t = Timer(self.timeout, _delete)
+        t.start()
+
+        # 4. Сохраняем ссылку на это сообщение
+        self._data[chat_id] = (msg_id, t)
+        return sent
+    
+bot = telebot.TeleBot(config.TOKEN, skip_pending=True)
+button_mgr = ButtonManager(bot, timeout=1800)
 
 def remove_buttons(chat_id, message_id):
     try:
@@ -32,8 +76,6 @@ def manage_agent_buttons(chat_id, markup):
 
 if config.PROXY_URL:
     apihelper.proxy = {'https': config.PROXY_URL}
-
-bot = telebot.TeleBot(config.TOKEN, skip_pending=True)
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -75,14 +117,35 @@ def send_text(message):
         bot.register_next_step_handler(take_new_request, get_new_request)
 
     elif message.text == '✉️ Мои запросы':
-        markup_and_value = markup.markup_reqs(user_id, 'my_reqs', '1')
-        markup_req = markup_and_value[0]
-        value = markup_and_value[1]
+        # 1. Отменяем прошлый таймер и удаляем старое сообщение (если есть)
+        if user_id in user_req_timers:
+            user_req_timers[user_id].cancel()
+        if user_id in user_req_messages:
+            try:
+                bot.delete_message(user_id, user_req_messages[user_id])
+            except: pass
 
+        # 2. Получаем новый список
+        markup_req, value = markup.markup_reqs(user_id, 'my_reqs', '1')
         if value == 0:
-            bot.send_message(message.chat.id, 'У вас пока ещё нет вопросов.', reply_markup=markup.markup_main())
+            sent = bot.send_message(user_id, 'У вас пока ещё нет вопросов.', reply_markup=markup.markup_main())
         else:
-            bot.send_message(message.chat.id, 'Ваши вопросы:', reply_markup=markup_req)
+            sent = bot.send_message(user_id,
+                                    'Ваши вопросы:',
+                                    reply_markup=markup_req)
+
+        # 3. Сохраняем message_id и запускаем таймер на удаление через 30 мин
+        user_req_messages[user_id] = sent.message_id
+
+        def _del():
+            try: bot.delete_message(user_id, sent.message_id)
+            except: pass
+            user_req_messages.pop(user_id, None)
+            user_req_timers.pop(user_id, None)
+
+        t = Timer(1800, _del)
+        t.start()
+        user_req_timers[user_id] = t
     
     elif message.text == '👤 Агент поддержки':
         agent(message)
@@ -248,97 +311,110 @@ def callback_inline(call):
     user_id = call.message.chat.id
 
     if call.message:
-        if ('my_reqs:' in call.data) or ('waiting_reqs:' in call.data) or ('answered_reqs:' in call.data) or ('confirm_reqs:' in call.data):
-            """
-            Обработчик кнопок для:
 
-            ✉️ Мои запросы
-            ❗️ Ожидают ответа от поддержки,
-            ⏳ Ожидают ответа от пользователя
-            ✅ Завершенные запросы  
-            """
-
+        # === Секция «Мои запросы» и других списков запросов ===
+        if call.data.startswith(('my_reqs:', 'waiting_reqs:', 'answered_reqs:', 'confirm_reqs:')):
             parts = call.data.split(':')
-            callback = parts[0]
-            number = parts[1]
-            markup_and_value = markup.markup_reqs(user_id, callback, number)
-            markup_req = markup_and_value[0]
-            value = markup_and_value[1]
+            mode, number = parts[0], parts[1]
+
+            markup_req, value = markup.markup_reqs(user_id, mode, number)
 
             if value == 0:
-                bot.send_message(chat_id=call.message.chat.id, text='⚠️ Запросы не обнаружены.', reply_markup=markup.markup_main())
                 bot.answer_callback_query(call.id)
-                return
+                return bot.send_message(user_id, '⚠️ Запросы не обнаружены.', reply_markup=markup.markup_main())
 
-            try:
-                bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text='Нажмите на запрос, чтобы посмотреть историю переписки, либо добавить сообщение:', reply_markup=markup_req)
-            except:
-                bot.send_message(chat_id=call.message.chat.id, text='Ваши запросы:', reply_markup=markup_req)
+            text = 'Нажмите на запрос, чтобы посмотреть историю переписки, либо добавить сообщение:'
+
+            # === Отменяем старый таймер ===
+            if user_id in user_req_timers:
+                user_req_timers[user_id].cancel()  # останавливаем старый таймер
+
+            # === Пытаемся отредактировать старое сообщение ===
+            if user_id in user_req_messages:
+                try:
+                    bot.edit_message_text(
+                        chat_id=user_id,
+                        message_id=user_req_messages[user_id],
+                        text=text,
+                        reply_markup=markup_req
+                    )
+                    msg_id = user_req_messages[user_id]
+                except Exception as e:
+                    # не удалось редактировать — удаляем и создаём новое
+                    try:
+                        bot.delete_message(user_id, user_req_messages[user_id])
+                    except Exception as e:
+                        print(f"Error deleting old message: {e}")
+                    sent = bot.send_message(user_id, text, reply_markup=markup_req)
+                    msg_id = sent.message_id
+            else:
+                # первого раза нет старого — просто отправляем новое
+                sent = bot.send_message(user_id, text, reply_markup=markup_req)
+                msg_id = sent.message_id
+
+            # сохраняем ID сообщения
+            user_req_messages[user_id] = msg_id
+
+            # запускаем таймер на удаление через 30 минут (1800 с)
+            def _del():
+                try:
+                    bot.delete_message(user_id, msg_id)
+                    user_req_messages.pop(user_id, None)  # Удаляем запись о сообщении
+                except Exception as e:
+                    print(f"Error deleting message after timeout: {e}")
+                finally:
+                    user_req_timers.pop(user_id, None)  # Убираем таймер из словаря
+
+            t = Timer(1800, _del)
+            t.start()
+            user_req_timers[user_id] = t
 
             bot.answer_callback_query(call.id)
+            return
 
-        #Открыть запрос
-        elif 'open_req:' in call.data:
+        # === Остальные ветки кода без изменений ===
+
+        # Открыть запрос
+        elif call.data.startswith('open_req:'):
             parts = call.data.split(':')
-            req_id = parts[1]
-            callback = parts[2]
-
+            req_id, callback = parts[1], parts[2]
             req_status = core.get_req_status(req_id)
             request_data = core.get_request_data(req_id, callback)
-            len_req_data = len(request_data)
-
-            i = 1
-            for data in request_data:
-                if i == len_req_data:
-                    markup_req = markup.markup_request_action(req_id, req_status, callback)
-                else:
-                    markup_req = None
-
-                bot.send_message(chat_id=call.message.chat.id, text=data, parse_mode='html', reply_markup=markup_req)
-
-                i += 1
-
+            for i, data in enumerate(request_data, start=1):
+                last = (i == len(request_data))
+                keyboard = markup.markup_request_action(req_id, req_status, callback) if last else None
+                bot.send_message(user_id, data, parse_mode='html', reply_markup=keyboard)
             bot.answer_callback_query(call.id)
 
-        #Добавить сообщение в запрос
-        elif 'add_message:' in call.data:
+        # Добавить сообщение
+        elif call.data.startswith('add_message:'):
             parts = call.data.split(':')
-            req_id = parts[1]
-            status_user = parts[2]
-
-            take_additional_message = bot.send_message(chat_id=call.message.chat.id, text='Отправьте ваше сообщение, использовав один из доступных типов данных (текст, файлы, фото, видео, аудио, голосовые сообщения)', reply_markup=markup.markup_cancel())
-
-            bot.register_next_step_handler(take_additional_message, get_additional_message, req_id, status_user)
-
+            req_id, status_user = parts[1], parts[2]
+            msg = bot.send_message(user_id,
+                                   'Отправьте ваше сообщение, использовав один из доступных типов данных (текст, файлы, фото, видео, аудио, голосовые сообщения)',
+                                   reply_markup=markup.markup_cancel())
+            bot.register_next_step_handler(msg, get_additional_message, req_id, status_user)
             bot.answer_callback_query(call.id)
 
-        #Завершить запрос
-        elif 'confirm_req:' in call.data:
+        # Завершить запрос
+        elif call.data.startswith('confirm_req:'):
             parts = call.data.split(':')
-            confirm_status = parts[1]
-            req_id = parts[2]
-
+            confirm_status, req_id = parts[1], parts[2]
             if core.get_req_status(req_id) == 'confirm':
-                bot.send_message(chat_id=call.message.chat.id, text="⚠️ Этот запрос уже завершен.", reply_markup=markup.markup_main())
-                bot.answer_callback_query(call.id)
-
-                return
-            
-            #Запросить подтверждение завершения
+                bot.send_message(user_id, "⚠️ Этот запрос уже завершен.", reply_markup=markup.markup_main())
+                return bot.answer_callback_query(call.id)
             if confirm_status == 'wait':
-                bot.send_message(chat_id=call.message.chat.id, text="Для завершения запроса - нажмите кнопку <b>Подтвердить</b>", parse_mode='html', reply_markup=markup.markup_confirm_req(req_id))
-            
-            #Подтвердить завершение
-            elif confirm_status == 'true':
+                bot.send_message(user_id, "Для завершения запроса - нажмите кнопку <b>Подтвердить</b>",
+                                 parse_mode='html', reply_markup=markup.markup_confirm_req(req_id))
+            else:  # 'true'
                 core.confirm_req(req_id)
-                
                 try:
-                    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="✅ Запрос успешно завершён.", reply_markup=markup.markup_main())
+                    bot.edit_message_text(user_id, call.message.message_id, "✅ Запрос успешно завершён.",
+                                          reply_markup=markup.markup_main())
                 except:
-                    bot.send_message(chat_id=call.message.chat.id, text="✅ Запрос успешно завершён.", reply_markup=markup.markup_main())
-                    # bot.send_message(chat_id=call.message.chat.id, text='Ваши запросы:', reply_markup=markup_req)
+                    bot.send_message(user_id, "✅ Запрос успешно завершён.", reply_markup=markup.markup_main())
+            bot.answer_callback_query(call.id)
 
-                bot.answer_callback_query(call.id)
 
         #Файлы запроса
         elif 'req_files:' in call.data:
