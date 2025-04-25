@@ -103,7 +103,7 @@ def send_text(message):
     user_id = message.from_user.id
 
     if message.text == '✏️ Написать запрос':
-        take_new_request = bot.send_message(message.chat.id, 'Введите свой запрос и наши сотрудники скоро с вами свяжутся.', reply_markup=markup.markup_cancel())
+        take_new_request = bot.send_message(message.chat.id, 'Введите свой запрос и наши сотрудники скоро с вами свяжутся.\nВы можете прикреплять к вопросу файлы/фотографии/видео', reply_markup=markup.markup_cancel())
 
         bot.clear_step_handler_by_chat_id(message.chat.id)
         bot.register_next_step_handler(take_new_request, get_new_request)
@@ -214,7 +214,7 @@ def get_new_request(message):
             req_id = core.new_req(user_id, request)
             core.add_file(req_id, file_id, file_name, type)
 
-            bot.send_message(message.chat.id, f'✅ Ваш запрос под ID {req_id} создан. Посмотреть текущие запросы можно нажав кнопку <b>Мои текущие запросы</b>', parse_mode='html', reply_markup=markup.markup_main())        
+            bot.send_message(message.chat.id, f'✅ Ваш запрос под ID {req_id} создан. Посмотреть или продолжить диалог на текущих запросов можно нажав кнопку <b>Мои текущие запросы</b>', parse_mode='html', reply_markup=markup.markup_main())        
     
     #Если пользователь отправляет только текст
     else:
