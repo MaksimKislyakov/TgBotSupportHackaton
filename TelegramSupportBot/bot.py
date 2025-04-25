@@ -4,6 +4,31 @@ import telebot
 import markup
 import sys
 from telebot import apihelper
+from threading import Timer
+
+active_buttons = {}
+
+def remove_buttons(chat_id, message_id):
+    try:
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except Exception as e:
+        print(f"Ошибка при удалении кнопок: {e}")
+
+def manage_agent_buttons(chat_id, markup):
+    if chat_id in active_buttons:
+        try:
+            old = active_buttons[chat_id]
+            bot.edit_message_reply_markup(chat_id=chat_id, message_id=old['message_id'], reply_markup=None)
+            old['timer'].cancel()
+        except Exception as e:
+            print(f"Ошибка при удалении предыдущих кнопок: {e}")
+
+    msg = bot.send_message(chat_id, "📋 Меню агента поддержки", reply_markup=markup)
+
+    timer = Timer(1800, remove_buttons, args=[chat_id, msg.message_id])
+    timer.start()
+
+    active_buttons[chat_id] = {'message_id': msg.message_id, 'timer': timer}
 
 if config.PROXY_URL:
     apihelper.proxy = {'https': config.PROXY_URL}
@@ -189,7 +214,8 @@ def get_additional_message(message, req_id, status):
             text = '✅ Ваше сообщение успешно отправлено!'
         
         if status == 'agent':
-            bot.send_message(message.chat.id, text, reply_markup=markup.markup_agent())
+            bot.send_message(message.chat.id, text)
+            manage_agent_buttons(message.chat.id, markup.markup_agent())
         else:
             bot.send_message(message.chat.id, text, reply_markup=markup.markup_main())
 
