@@ -42,7 +42,7 @@ class ButtonManager:
         return sent
     
 bot = telebot.TeleBot(config.TOKEN, skip_pending=True)
-button_mgr = ButtonManager(bot, timeout=86400)
+button_mgr = ButtonManager(bot, timeout=600)
 
 def remove_buttons(chat_id, message_id):
     try:
@@ -92,7 +92,9 @@ def agent(message):
 def admin(message):
     user_id = message.from_user.id
 
-    if str(user_id) == config.ADMIN_ID:
+    maksim = config.ADMIN_ID[1]
+    andrey = config.ADMIN_ID[0]
+    if str(user_id) == maksim:
         button_mgr.send(message.chat.id, '🔑 Вы авторизованы как Админ', reply_markup=markup.markup_admin())
     else:
         bot.send_message(message.chat.id, '🚫 Эта команда доступна только администратору.')
@@ -537,6 +539,7 @@ def callback_inline(call):
             bot.answer_callback_query(call.id)
 
         #Сгенерировать пароли
+        
         elif call.data == 'generate_passwords':
             #10 - количество паролей, 16 - длина пароля
             passwords = core.generate_passwords(10, 16) 
@@ -552,7 +555,7 @@ def callback_inline(call):
             button_mgr.send(call.message.chat.id, 'Нажмите на пароль, чтобы удалить его', parse_mode='html', reply_markup=markup.markup_passwords('1')[0])
 
             bot.answer_callback_query(call.id)
-
+        
         #Остановить бота
         elif 'stop_bot:' in call.data:
             status = call.data.split(':')[1]

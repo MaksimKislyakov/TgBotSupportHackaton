@@ -203,9 +203,9 @@ def generate_passwords(number, lenght):
 
     return passsords
 
-passwords = generate_passwords(10, 8)
-add_passwords(passwords)
-print(passwords)
+# passwords = generate_passwords(10, 8)
+# add_passwords(passwords)
+# print(passwords)
 
 
 #Получить юзер айди пользователя, создавшего запрос
